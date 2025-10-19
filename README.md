@@ -81,6 +81,12 @@ providing all arguments in the command line:
 modbus-proxy -b tcp://0:9000 --modbus tcp://plc1.acme.org:502
 ```
 
+For RTU-over-TCP devices (such as Elfin EE11 gateways), use the `rtu+tcp://` scheme:
+
+```bash
+modbus-proxy -b tcp://0:9000 --modbus rtu+tcp://192.168.42.162:8899 --timeout 5
+```
+
 (hint: run `modbus-proxy --help` to see all available options)
 
 ### Forwarding Unit Identifiers
@@ -135,6 +141,128 @@ Finally run a the example client but now address the proxy instead of the server
 $ python examples/simple_tcp_client.py -a 0:9000
 holding registers: [1, 2, 3, 4]
 ```
+
+## RTU-over-TCP Support
+
+Modbus-proxy supports RTU-over-TCP connections for devices that communicate using Modbus RTU framing over TCP connections (such as RS-485 to TCP gateways like Elfin EE11).
+
+### Key Features
+
+* **Protocol Conversion**: Automatically converts between Modbus TCP (MBAP) and Modbus RTU framing
+* **CRC Validation**: Validates CRC16 checksums in RTU responses
+* **Function Code Support**: Supports standard Modbus functions (0x01-0x06, 0x0F, 0x10, 0x17) and exception responses
+* **Connection Management**: Maintains a single persistent upstream connection with automatic reconnection
+* **Error Handling**: Robust timeout and retry handling with distinction between network and protocol errors
+* **Metrics**: Built-in request counters and error tracking for monitoring
+
+### Configuration
+
+Use the `rtu+tcp://` scheme for RTU-over-TCP devices:
+
+```yaml
+devices:
+- modbus:
+    url: rtu+tcp://192.168.42.162:8899  # RTU-over-TCP device
+    timeout: 5                          # Connection timeout (seconds)
+  listen:
+    bind: 0:1502                        # Listen for TCP clients
+```
+
+### Command Line Usage
+
+```bash
+modbus-proxy --bind tcp://0.0.0.0:1502 --modbus rtu+tcp://192.168.42.162:8899 --timeout 5
+```
+
+### RTU-over-TCP Protocol Details
+
+* **Request Conversion**: MBAP → UnitID + PDU + CRC16
+* **Response Conversion**: UnitID + FunctionCode + Data + CRC16 → MBAP + UnitID + PDU
+* **Framing**: Proper handling of RTU frame structure based on function codes
+* **Exception Handling**: Supports Modbus exception responses (function code | 0x80)
+
+### Compatible Devices
+
+This feature is designed to work with:
+* Elfin EE11 RS-485 to TCP gateways
+* Any device that implements Modbus RTU over TCP without MBAP headers
+* Industrial gateways that bridge RS-485 Modbus RTU to TCP
+
+### Supported Function Codes
+
+| Code | Function | Description |
+|------|----------|-------------|
+| 0x01 | Read Coils | Read discrete outputs |
+| 0x02 | Read Discrete Inputs | Read discrete inputs |
+| 0x03 | Read Holding Registers | Read holding registers |
+| 0x04 | Read Input Registers | Read input registers |
+| 0x05 | Write Single Coil | Write single discrete output |
+| 0x06 | Write Single Register | Write single holding register |
+| 0x0F | Write Multiple Coils | Write multiple discrete outputs |
+| 0x10 | Write Multiple Registers | Write multiple holding registers |
+| 0x17 | Read/Write Multiple Registers | Read/write multiple holding registers |
+| 0x8x | Exception Responses | All exception responses supported |
+
+### Monitoring and Troubleshooting
+
+The RTU-over-TCP client exposes metrics for monitoring:
+
+```python
+# Access metrics programmatically
+metrics = bridge.rtu_client.metrics
+print(f"Total requests: {metrics['requests']}")
+print(f"CRC errors: {metrics['crc_errors']}")
+print(f"Timeouts: {metrics['timeouts']}")
+print(f"Protocol errors: {metrics['protocol_errors']}")
+```
+
+**Common error patterns in logs:**
+
+| Log Message | Cause | Solution |
+|-------------|-------|----------|
+| `Invalid CRC in RTU response` | Electrical noise on RS-485 | Check cabling, add termination resistors |
+| `Unit ID mismatch` | Wrong unit_id or multi-drop bus | Verify unit_id configuration |
+| `Unsupported function code` | Device uses custom functions | Contact device vendor |
+| `network error, will retry` | Network timeout or connection drop | Check network stability, increase timeout |
+| `connection appears closed, reconnecting` | Gateway closed idle connection | Normal behavior, no action needed |
+
+### Performance Considerations
+
+* **Latency**: Typical RTU-over-TCP round-trip: 50-200ms (depends on gateway and RS-485 bus speed)
+* **Throughput**: ~5-10 requests/second per device (limited by RTU serial nature)
+* **Concurrent Clients**: Multiple TCP clients can connect; requests are serialized upstream
+* **Connection Reuse**: The proxy maintains one persistent connection to the RTU gateway
+
+### Example Use Cases
+
+1. **Home Assistant + Huawei Solar Inverter via Elfin EE11**
+   ```bash
+   modbus-proxy -b tcp://0:1502 --modbus rtu+tcp://elfin-ee11.local:8899 --timeout 5
+   ```
+
+2. **Multiple RTU devices on same RS-485 bus** (using unit_id)
+   ```yaml
+   devices:
+   - modbus:
+       url: rtu+tcp://192.168.1.100:8899
+       timeout: 5
+     listen:
+       bind: 0:1502
+     unit_id_remapping:
+       1: 1  # Inverter 1
+       2: 2  # Inverter 2
+   ```
+
+3. **Industrial PLC with RTU gateway**
+   ```yaml
+   devices:
+   - modbus:
+       url: rtu+tcp://plc-gateway:502
+       timeout: 10  # Longer timeout for slow PLCs
+     listen:
+       bind: 0:5020
+   ```
+
 ## Running as a Service
 1. move the config file to a location you can remember, for example: to `/usr/lib/mproxy-conf.yaml`
 2. go to `/etc/systemd/system/`

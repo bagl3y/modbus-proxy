@@ -18,7 +18,7 @@ import toml
 import yaml
 import pytest
 
-from modbus_proxy import parse_url, parse_args, load_config, run
+from modbus_proxy import parse_url, parse_args, load_config, run, modbus_crc, append_crc, verify_crc
 
 from .conftest import REQ, REP, REQ2, REP2, REQ3_ORIGINAL, REP3_MODIFIED
 
@@ -250,3 +250,66 @@ async def test_device_not_connected(modbus):
 
     with pytest.raises(asyncio.IncompleteReadError):
         await make_requests(modbus, [(REQ, REP)])
+
+
+# Tests for CRC functions
+def test_modbus_crc():
+    """Test CRC16 calculation with known test vectors."""
+    # Test vector 1: CRC of 0x0103 should be 0x2140
+    data1 = b'\x01\x03'
+    assert modbus_crc(data1) == 0x2140
+
+    # Test vector 2: CRC of 0x010300010004 should be 0xC915
+    # Full frame: 01 03 00 01 00 04 15 C9 (CRC in little-endian)
+    data2 = b'\x01\x03\x00\x01\x00\x04'
+    assert modbus_crc(data2) == 0xC915
+
+    # Test vector 3: Empty data should be 0xFFFF
+    assert modbus_crc(b'') == 0xFFFF
+
+
+def test_append_crc():
+    """Test appending CRC to data."""
+    # Test with known data
+    data = b'\x01\x03\x00\x01\x00\x04'
+    frame_with_crc = append_crc(data)
+    expected_crc = 0xC915
+    expected_frame = data + bytes([expected_crc & 0xFF, (expected_crc >> 8) & 0xFF])
+    assert frame_with_crc == expected_frame
+    # Verify it matches known complete frame
+    assert frame_with_crc == b'\x01\x03\x00\x01\x00\x04\x15\xC9'
+
+
+def test_verify_crc():
+    """Test CRC verification."""
+    # Valid frame
+    data = b'\x01\x03\x00\x01\x00\x04'
+    crc = modbus_crc(data)
+    frame = data + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
+    assert verify_crc(frame) is True
+
+    # Invalid frame (wrong CRC)
+    invalid_frame = data + b'\x00\x00'
+    assert verify_crc(invalid_frame) is False
+
+    # Frame too short
+    assert verify_crc(b'\x01') is False
+
+
+def test_parse_url_rtu_tcp():
+    """Test parsing of rtu+tcp URLs."""
+    # Test rtu+tcp scheme
+    url = parse_url("rtu+tcp://192.168.1.100:8899")
+    assert url.scheme == "rtu+tcp"
+    assert url.hostname == "192.168.1.100"
+    assert url.port == 8899
+
+    # Test default scheme addition still works
+    url = parse_url("192.168.1.100:502")
+    assert url.scheme == "tcp"
+    assert url.hostname == "192.168.1.100"
+    assert url.port == 502
+
+    # Test invalid scheme
+    with pytest.raises(ValueError, match="Unsupported URL scheme"):
+        parse_url("http://example.com:502")
